@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
@@ -81,10 +82,32 @@ class ThresholdUpdate(BaseModel):
     cpu_threshold: Optional[float] = None
     memory_threshold: Optional[float] = None
 
+last_alert_time = {
+    "cpu": None,
+    "memory": None
+}
+ALERT_COOLDOWN_SECONDS = 10
+
 @app.on_event("startup")
 async def startup_event():
     await init_db()
     asyncio.create_task(monitor_loop())
+
+def should_send_alert(alert_type: str) -> bool:
+    global last_alert_time
+    now = datetime.utcnow()
+    last_time = last_alert_time.get(alert_type)
+    
+    if last_time is None:
+        last_alert_time[alert_type] = now
+        return True
+    
+    time_diff = (now - last_time).total_seconds()
+    if time_diff >= ALERT_COOLDOWN_SECONDS:
+        last_alert_time[alert_type] = now
+        return True
+    
+    return False
 
 async def monitor_loop():
     while True:
@@ -105,14 +128,15 @@ async def monitor_loop():
                     
                     alerts = system_monitor.check_thresholds(metrics)
                     for alert in alerts:
-                        new_alert = Alert(
-                            alert_type=alert["type"],
-                            message=alert["message"],
-                            value=alert["value"],
-                            threshold=alert["threshold"]
-                        )
-                        session.add(new_alert)
-                        await manager.send_alert(alert)
+                        if should_send_alert(alert["type"]):
+                            new_alert = Alert(
+                                alert_type=alert["type"],
+                                message=alert["message"],
+                                value=alert["value"],
+                                threshold=alert["threshold"]
+                            )
+                            session.add(new_alert)
+                            await manager.send_alert(alert)
                     
                     await session.commit()
                 
@@ -260,13 +284,19 @@ async def websocket_metrics(websocket: WebSocket):
     await manager.connect(websocket, client_id)
     try:
         while True:
-            data = await websocket.receive_text()
             try:
-                message = eval(data)
-                if message.get("type") == "ping":
-                    await manager.send_personal_message({"type": "pong"}, client_id)
-            except:
-                pass
+                data = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=30.0
+                )
+                try:
+                    message = json.loads(data)
+                    if message.get("type") == "ping":
+                        await manager.send_personal_message({"type": "pong"}, client_id)
+                except json.JSONDecodeError:
+                    pass
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping"})
     except WebSocketDisconnect:
         manager.disconnect(client_id)
     except Exception as e:

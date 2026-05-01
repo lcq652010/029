@@ -1,4 +1,6 @@
 import psutil
+import os
+import platform
 from datetime import datetime
 from typing import Dict, Any
 from config import settings
@@ -6,9 +8,13 @@ from config import settings
 class SystemMonitor:
     def __init__(self):
         self.last_net_io = None
+        self._init_cpu_usage()
+    
+    def _init_cpu_usage(self):
+        psutil.cpu_percent(interval=0)
     
     def get_cpu_usage(self) -> float:
-        return psutil.cpu_percent(interval=1)
+        return psutil.cpu_percent(interval=0)
     
     def get_memory_usage(self) -> float:
         mem = psutil.virtual_memory()
@@ -24,8 +30,16 @@ class SystemMonitor:
         }
     
     def get_disk_usage(self) -> float:
-        disk = psutil.disk_usage('/')
-        return disk.percent
+        system = platform.system()
+        if system == 'Windows':
+            partitions = psutil.disk_partitions()
+            if partitions:
+                disk = psutil.disk_usage(partitions[0].mountpoint)
+                return disk.percent
+            return 0.0
+        else:
+            disk = psutil.disk_usage('/')
+            return disk.percent
     
     def get_network_io(self) -> Dict[str, Any]:
         net_io = psutil.net_io_counters()
