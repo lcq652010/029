@@ -1,7 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict
 from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -86,6 +86,10 @@ last_alert_time = {
     "cpu": None,
     "memory": None
 }
+last_alert_state = {
+    "cpu": False,
+    "memory": False
+}
 ALERT_COOLDOWN_SECONDS = 10
 
 @app.on_event("startup")
@@ -109,12 +113,40 @@ def should_send_alert(alert_type: str) -> bool:
     
     return False
 
+def check_recovery(metrics: Dict) -> list:
+    global last_alert_state
+    recoveries = []
+    
+    current_cpu_alert = metrics["cpu_usage"] >= settings.CPU_THRESHOLD
+    current_memory_alert = metrics["memory_usage"] >= settings.MEMORY_THRESHOLD
+    
+    if last_alert_state["cpu"] and not current_cpu_alert:
+        recoveries.append({
+            "type": "cpu_recovery",
+            "message": f"CPU 使用率已恢复正常: {metrics['cpu_usage']:.2f}%",
+            "value": metrics["cpu_usage"],
+            "threshold": settings.CPU_THRESHOLD
+        })
+    
+    if last_alert_state["memory"] and not current_memory_alert:
+        recoveries.append({
+            "type": "memory_recovery",
+            "message": f"内存使用率已恢复正常: {metrics['memory_usage']:.2f}%",
+            "value": metrics["memory_usage"],
+            "threshold": settings.MEMORY_THRESHOLD
+        })
+    
+    last_alert_state["cpu"] = current_cpu_alert
+    last_alert_state["memory"] = current_memory_alert
+    
+    return recoveries
+
 async def monitor_loop():
     while True:
         try:
+            metrics = system_monitor.get_all_metrics()
+            
             if len(manager.active_connections) > 0:
-                metrics = system_monitor.get_all_metrics()
-                
                 async with async_session() as session:
                     new_metric = SystemMetric(
                         timestamp=datetime.fromisoformat(metrics["timestamp"]),
@@ -138,6 +170,10 @@ async def monitor_loop():
                             session.add(new_alert)
                             await manager.send_alert(alert)
                     
+                    recoveries = check_recovery(metrics)
+                    for recovery in recoveries:
+                        await manager.send_alert(recovery)
+                    
                     await session.commit()
                 
                 await manager.send_metrics(metrics)
@@ -145,6 +181,8 @@ async def monitor_loop():
             await asyncio.sleep(settings.WS_UPDATE_INTERVAL)
         except Exception as e:
             print(f"Error in monitor loop: {e}")
+            import traceback
+            traceback.print_exc()
             await asyncio.sleep(settings.WS_UPDATE_INTERVAL)
 
 @app.post("/api/register", response_model=UserResponse)
@@ -285,18 +323,15 @@ async def websocket_metrics(websocket: WebSocket):
     try:
         while True:
             try:
-                data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=30.0
-                )
+                data = await websocket.receive_text()
                 try:
                     message = json.loads(data)
                     if message.get("type") == "ping":
                         await manager.send_personal_message({"type": "pong"}, client_id)
                 except json.JSONDecodeError:
                     pass
-            except asyncio.TimeoutError:
-                await websocket.send_json({"type": "ping"})
+            except Exception:
+                await asyncio.sleep(1)
     except WebSocketDisconnect:
         manager.disconnect(client_id)
     except Exception as e:

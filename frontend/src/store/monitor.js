@@ -164,6 +164,8 @@ export const useMonitorStore = defineStore('monitor', () => {
     ws.value.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
+        console.log('收到 WebSocket 消息:', message.type)
+        
         if (message.type === 'metrics') {
           updateCurrentMetrics(message.data)
         } else if (message.type === 'alert') {
@@ -173,6 +175,8 @@ export const useMonitorStore = defineStore('monitor', () => {
             is_read: false
           }
           alerts.value.unshift(newAlert)
+        } else if (message.type === 'pong') {
+          console.log('收到 pong 响应')
         }
       } catch (error) {
         console.error('解析 WebSocket 消息失败:', error)

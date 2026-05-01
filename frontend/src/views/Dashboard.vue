@@ -408,15 +408,19 @@ watch(showSettings, (val) => {
 })
 
 watch([cpuChartData, memoryChartData], () => {
+  console.log('图表数据更新, CPU 数据点:', cpuChartData.value.timestamps.length)
   updateCharts()
 }, { deep: true })
 
 watch(unreadAlerts, (newVal, oldVal) => {
   if (newVal.length > oldVal.length) {
+    const latestAlert = newVal[0]
+    const isRecovery = latestAlert.type?.includes('recovery')
+    
     ElNotification({
-      title: '新告警',
-      message: newVal[0].message,
-      type: 'warning',
+      title: isRecovery ? '恢复通知' : '新告警',
+      message: latestAlert.message,
+      type: isRecovery ? 'success' : 'warning',
       duration: 5000
     })
   }
@@ -425,10 +429,13 @@ watch(unreadAlerts, (newVal, oldVal) => {
 onMounted(async () => {
   await monitorStore.fetchThresholds()
   await monitorStore.fetchCurrentMetrics()
-  monitorStore.connectWebSocket()
   
   await nextTick()
   initCharts()
+  
+  updateCharts()
+  
+  monitorStore.connectWebSocket()
   
   window.addEventListener('resize', () => {
     cpuChart?.resize()
